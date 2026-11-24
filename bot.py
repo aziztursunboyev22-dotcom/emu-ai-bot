@@ -127,7 +127,8 @@ def ask_gemini(history, extra_rules=""):
         "generationConfig": {"temperature": 0.4},
     }
     try:
-        r = requests.post(url, params={"key": GEMINI_API_KEY}, json=body, timeout=60)
+        # Kalit sarlavhada yuboriladi — eski (AIza...) va yangi (AQ....) formatlar uchun ham ishlaydi
+        r = requests.post(url, headers={"x-goog-api-key": GEMINI_API_KEY}, json=body, timeout=60)
         data = r.json()
         if r.status_code != 200:
             log.error("Gemini xato %s: %s", r.status_code, data)
