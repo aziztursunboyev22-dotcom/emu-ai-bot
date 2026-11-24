@@ -32,7 +32,7 @@ log = logging.getLogger("emu-bot")
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 BITRIX_WEBHOOK = os.environ.get("BITRIX_WEBHOOK", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash").strip()
 BITRIX_SOURCE_ID = os.environ.get("BITRIX_SOURCE_ID", "").strip()
 PAUSE_MINUTES = int(os.environ.get("PAUSE_MINUTES", "60"))
 
@@ -75,7 +75,10 @@ TIZIM ESLATMASI: Bemor hozirgina telefon raqamini qoldirdi va u operatorga yubor
 Rahmat ayt va operator tez orada bog'lanishini ayt. Raqamni qayta so'rama.
 """
 
-FALLBACK_TEXT = "Rahmat, xabaringiz qabul qilindi. Operatorimiz tez orada javob beradi."
+START_TEXT = ("Assalomu alaykum! Clinic of EMU stomatologiya klinikasiga xush kelibsiz. "
+              "Savolingizni yozing yoki konsultatsiyaga yozilish uchun telefon raqamingizni qoldiring.")
+
+FALLBACK_TEXT ="Rahmat, xabaringiz qabul qilindi. Operatorimiz tez orada javob beradi."
 
 # --- Xotira (server qayta ishga tushsa tozalanadi) ---
 histories = defaultdict(lambda: deque(maxlen=HISTORY_LEN))  # suhbat kaliti -> [(role, text)]
@@ -221,6 +224,14 @@ def handle_message(msg, business_connection_id=None):
         return
 
     is_group = chat["type"] in ("group", "supergroup")
+
+    # /start — AI'siz, tayyor salomlashuv
+    if text.strip().startswith("/start"):
+        if not is_group:
+            send_text(chat_id, START_TEXT, business_connection_id=business_connection_id)
+        return
+    if text.strip().startswith("/"):
+        return
     name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])).strip()
     username = user.get("username")
 
