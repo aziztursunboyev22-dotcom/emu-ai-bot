@@ -54,7 +54,9 @@ CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-5-5").strip()
 BITRIX_SOURCE_ID = os.environ.get("BITRIX_SOURCE_ID", "").strip()
 PAUSE_MINUTES = int(os.environ.get("PAUSE_MINUTES", "60"))
 IG_ACCESS_TOKEN = os.environ.get("IG_ACCESS_TOKEN", "").strip()
-IG_VERIFY_TOKEN = os.environ.get("IG_VERIFY_TOKEN", "").strip()
+# Webhook tasdiqlash so'zi maxfiy emas (faqat Meta obunasini tasdiqlash uchun),
+# shuning uchun standart qiymati kodda. Haqiqiy himoya — IG_APP_SECRET imzo tekshiruvi.
+IG_VERIFY_TOKEN = os.environ.get("IG_VERIFY_TOKEN", "emu_webhook_2026").strip()
 IG_APP_SECRET = os.environ.get("IG_APP_SECRET", "").strip()
 PORT = int(os.environ.get("PORT", "8080"))
 
