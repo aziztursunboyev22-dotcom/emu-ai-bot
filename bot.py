@@ -480,6 +480,28 @@ def handle_instagram_event(ev):
                send=lambda answer: ig_send(sender, answer))
 
 
+PRIVACY_HTML = """<!DOCTYPE html><html lang="uz"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clinic of EMU — Maxfiylik siyosati</title>
+<style>body{font-family:system-ui,Arial,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.6;color:#222}</style>
+</head><body>
+<h1>Clinic of EMU — Maxfiylik siyosati</h1>
+<p>Ushbu xizmat Clinic of EMU klinikasining Telegram va Instagram orqali kelgan murojaatlarga
+avtomatik javob beruvchi yordamchisidir.</p>
+<h2>Qanday ma'lumotlar ishlatiladi</h2>
+<p>Siz yuborgan xabar matni, ismingiz/foydalanuvchi nomingiz va siz o'zingiz qoldirgan telefon raqami.</p>
+<h2>Nima uchun</h2>
+<p>Savolingizga javob berish va konsultatsiyaga yozilish uchun operatorimiz siz bilan bog'lanishi maqsadida.
+Telefon raqamingiz klinikaning ichki CRM tizimiga (Bitrix24) yoziladi.</p>
+<h2>Uchinchi shaxslar</h2>
+<p>Ma'lumotlar sotilmaydi va reklama maqsadida boshqalarga berilmaydi. Javob tayyorlash uchun xabar matni
+sun'iy intellekt xizmatiga yuboriladi.</p>
+<h2>Ma'lumotlarni o'chirish</h2>
+<p>Ma'lumotlaringizni o'chirish uchun klinikaning Instagram yoki Telegram sahifasiga "Ma'lumotlarimni o'chiring"
+deb yozing — so'rovingiz 30 kun ichida bajariladi.</p>
+</body></html>"""
+
+
 class WebhookHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -500,7 +522,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 log.info("Instagram webhook tasdiqlandi")
                 return self._reply(200, q.get("hub.challenge", [""])[0].encode())
             return self._reply(403, b"Forbidden")
+        if url.path in ("/privacy", "/data-deletion"):
+            return self._html(PRIVACY_HTML)
         return self._reply(200, b"EMU AI bot ishlayapti")
+
+    def _html(self, html):
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):
         if urlparse(self.path).path != "/instagram":
@@ -518,6 +549,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw or b"{}")
         except ValueError:
             return
+        log.info("Instagram webhook keldi: %s", raw[:300].decode("utf-8", "replace"))
         for entry in payload.get("entry", []):
             for ev in entry.get("messaging", []):
                 executor.submit(safe, handle_instagram_event, ev)
