@@ -22,7 +22,9 @@ import os
 import re
 import time
 import logging
+import threading
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -86,6 +88,8 @@ sent_phones = set()            # bu ishga tushishda Bitrix'ga yuborilgan raqamla
 business_owners = {}           # business_connection_id -> klinika akkaunti user_id
 paused_until = {}              # (business_connection_id, chat_id) -> vaqt
 bot_info = {}
+chat_locks = defaultdict(threading.Lock)        # har bir suhbat uchun alohida navbat
+executor = ThreadPoolExecutor(max_workers=10)   # bir vaqtda 10 tagacha suhbatga javob
 
 
 # ---------------- Telegram ----------------
@@ -121,27 +125,59 @@ def get_business_owner(conn_id):
 
 
 # ---------------- Gemini ----------------
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/"
+GEMINI_HEADERS = {"x-goog-api-key": GEMINI_API_KEY}  # AIza... va AQ.... kalitlar uchun
+GEMINI_TIMEOUT = 25        # bitta urinish necha soniya kutadi
+MAX_MODEL_TRIES = 4        # javob bo'lmasa nechta modelni sinab ko'radi
+gemini_models = [GEMINI_MODEL]
+SKIP_WORDS = ("image", "tts", "audio", "live", "embedding", "vision", "robotics", "computer")
+
+
+def load_gemini_models():
+    """Kalit uchun ochiq 'flash' modellar ro'yxatini oladi. Asosiy model birinchi turadi,
+    u band bo'lsa (503/429/timeout) navbatdagisi ishlatiladi."""
+    global gemini_models
+    try:
+        r = requests.get(GEMINI_BASE + "models", headers=GEMINI_HEADERS,
+                         params={"pageSize": 200}, timeout=20)
+        names = []
+        for m in r.json().get("models", []):
+            name = m.get("name", "").replace("models/", "")
+            if ("generateContent" in m.get("supportedGenerationMethods", [])
+                    and "flash" in name and not any(w in name for w in SKIP_WORDS)):
+                names.append(name)
+        names.sort(reverse=True)  # yangi versiyalar oldinda
+        ordered = [GEMINI_MODEL] + [n for n in names if n != GEMINI_MODEL]
+        gemini_models = ordered
+        log.info("Gemini modellar navbati: %s", ", ".join(ordered[:MAX_MODEL_TRIES]))
+    except Exception as e:
+        log.error("Gemini modellar ro'yxatini olib bo'lmadi: %s", e)
+
+
 def ask_gemini(history, extra_rules=""):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    contents = [{"role": role, "parts": [{"text": text}]} for role, text in history]
     body = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT + extra_rules}]},
-        "contents": contents,
+        "contents": [{"role": role, "parts": [{"text": text}]} for role, text in history],
         "generationConfig": {"temperature": 0.4},
     }
-    try:
-        # Kalit sarlavhada yuboriladi — eski (AIza...) va yangi (AQ....) formatlar uchun ham ishlaydi
-        r = requests.post(url, headers={"x-goog-api-key": GEMINI_API_KEY}, json=body, timeout=60)
-        data = r.json()
-        if r.status_code != 200:
-            log.error("Gemini xato %s: %s", r.status_code, data)
-            return None
-        parts = data["candidates"][0]["content"]["parts"]
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
-        return text.replace("**", "").replace("*", "") or None
-    except Exception as e:
-        log.error("Gemini ulanish xatosi: %s", e)
-        return None
+    for model in gemini_models[:MAX_MODEL_TRIES]:
+        try:
+            r = requests.post(f"{GEMINI_BASE}models/{model}:generateContent",
+                              headers=GEMINI_HEADERS, json=body, timeout=GEMINI_TIMEOUT)
+            data = r.json()
+            if r.status_code != 200:
+                log.warning("Gemini %s xato %s: %s", model, r.status_code,
+                            data.get("error", {}).get("message", data))
+                continue
+            parts = data["candidates"][0]["content"]["parts"]
+            text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+            text = text.replace("**", "").replace("*", "")
+            if text:
+                return text
+        except Exception as e:
+            log.warning("Gemini %s ulanish xatosi: %s", model, e)
+    log.error("Gemini: hech bir model javob bermadi")
+    return None
 
 
 # ---------------- Telefon raqam ----------------
@@ -252,6 +288,20 @@ def handle_message(msg, business_connection_id=None):
         place = "bot"
 
     key = (business_connection_id or "", chat_id, user.get("id") if is_group else 0)
+    with chat_locks[key]:  # bitta suhbatdagi xabarlar navbat bilan, turli suhbatlar parallel
+        process_dialog(key, msg, text, chat_id, is_group, name, username, place,
+                       business_connection_id)
+
+
+def process_dialog(key, msg, text, chat_id, is_group, name, username, place,
+                   business_connection_id):
+    # "yozmoqda..." belgisini ko'rsatish
+    action = {"chat_id": chat_id, "action": "typing"}
+    if business_connection_id:
+        action["business_connection_id"] = business_connection_id
+    if not is_group:
+        tg("sendChatAction", **action)
+
     history = histories[key]
     history.append(("user", text))
 
@@ -286,6 +336,7 @@ def main():
     bot_info.update(me["result"])
     tg("deleteWebhook")
     log.info("Bot ishga tushdi: @%s, model: %s", bot_info.get("username"), GEMINI_MODEL)
+    load_gemini_models()
 
     offset = None
     while True:
@@ -300,18 +351,22 @@ def main():
 
         for upd in data["result"]:
             offset = upd["update_id"] + 1
-            try:
-                if "business_connection" in upd:
-                    bc = upd["business_connection"]
-                    business_owners[bc["id"]] = bc["user"]["id"]
-                    log.info("Business akkaunt ulandi: %s", bc["user"].get("first_name"))
-                elif "business_message" in upd:
-                    m = upd["business_message"]
-                    handle_message(m, business_connection_id=m.get("business_connection_id"))
-                elif "message" in upd:
-                    handle_message(upd["message"])
-            except Exception as e:
-                log.exception("Xabarni qayta ishlashda xato: %s", e)
+            if "business_connection" in upd:
+                bc = upd["business_connection"]
+                business_owners[bc["id"]] = bc["user"]["id"]
+                log.info("Business akkaunt ulandi: %s", bc["user"].get("first_name"))
+            elif "business_message" in upd:
+                m = upd["business_message"]
+                executor.submit(safe_handle, m, m.get("business_connection_id"))
+            elif "message" in upd:
+                executor.submit(safe_handle, upd["message"], None)
+
+
+def safe_handle(msg, business_connection_id):
+    try:
+        handle_message(msg, business_connection_id=business_connection_id)
+    except Exception as e:
+        log.exception("Xabarni qayta ishlashda xato: %s", e)
 
 
 if __name__ == "__main__":
