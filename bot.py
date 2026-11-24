@@ -416,36 +416,45 @@ def telegram_loop():
 
 # =============================== Instagram ===============================
 ig_names = {}
+# Token turiga qarab API manzili har xil bo'ladi: Instagram Login tokeni — graph.instagram.com,
+# Meta "Unified login" (tizim foydalanuvchisi) tokeni — graph.facebook.com. Ikkalasi sinab ko'riladi.
+IG_HOSTS = ["https://graph.instagram.com/", "https://graph.facebook.com/v25.0/"]
+ig_host_ok = {"host": None}
+
+
+def ig_request(method, path, **kwargs):
+    hosts = [ig_host_ok["host"]] if ig_host_ok["host"] else IG_HOSTS
+    last = None
+    for host in hosts:
+        try:
+            r = requests.request(method, host + path, timeout=30,
+                                 headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"}, **kwargs)
+            data = r.json()
+            if r.status_code == 200:
+                if ig_host_ok["host"] != host:
+                    ig_host_ok["host"] = host
+                    log.info("Instagram API manzili: %s", host)
+                return data
+            last = (r.status_code, data)
+        except Exception as e:
+            last = ("ulanish", str(e))
+    log.error("Instagram %s %s xato: %s", method, path, last)
+    return None
 
 
 def ig_send(recipient_id, text):
-    try:
-        r = requests.post(IG_API + "me/messages",
-                          headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"},
-                          json={"recipient": {"id": recipient_id}, "message": {"text": text[:1000]}},
-                          timeout=30)
-        data = r.json()
-        if r.status_code != 200:
-            log.error("Instagram yuborish xato %s: %s", r.status_code, data)
-        elif data.get("message_id"):
-            ig_sent_mids.add(data["message_id"])
-    except Exception as e:
-        log.error("Instagram yuborish ulanish xatosi: %s", e)
+    data = ig_request("POST", "me/messages",
+                      json={"recipient": {"id": recipient_id}, "message": {"text": text[:1000]}})
+    if data and data.get("message_id"):
+        ig_sent_mids.add(data["message_id"])
 
 
 def ig_profile(user_id):
     if user_id in ig_names:
         return ig_names[user_id]
-    name, username = "", ""
-    try:
-        r = requests.get(IG_API + user_id, params={"fields": "name,username"},
-                         headers={"Authorization": f"Bearer {IG_ACCESS_TOKEN}"}, timeout=15)
-        d = r.json()
-        name, username = d.get("name", ""), d.get("username", "")
-    except Exception:
-        pass
-    ig_names[user_id] = (name, username)
-    return name, username
+    d = ig_request("GET", user_id, params={"fields": "name,username"}) or {}
+    ig_names[user_id] = (d.get("name", ""), d.get("username", ""))
+    return ig_names[user_id]
 
 
 def handle_instagram_event(ev):
